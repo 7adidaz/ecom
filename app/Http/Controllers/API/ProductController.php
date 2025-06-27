@@ -3,7 +3,10 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\ProductCollection;
+use App\Http\Resources\ProductResource;
 use App\Models\Product;
+use App\Repositories\Interfaces\ProductRepositoryInterface;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Cache;
@@ -12,6 +15,21 @@ use Illuminate\Support\Facades\Validator;
 class ProductController extends Controller
 {
     /**
+     * @var ProductRepositoryInterface
+     */
+    private $productRepository;
+    
+    /**
+     * ProductController constructor.
+     * 
+     * @param ProductRepositoryInterface $productRepository
+     */
+    public function __construct(ProductRepositoryInterface $productRepository)
+    {
+        $this->productRepository = $productRepository;
+    }
+
+    /**
      * Display a listing of the products.
      * 
      * @param \Illuminate\Http\Request $request
@@ -19,82 +37,22 @@ class ProductController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        // Pagination parameters
         $perPage = $request->input('per_page', 10);
-        $page = $request->input('page', 1);
+        $products = $this->productRepository->paginate($perPage);
         
-        // Sorting parameters
-        $sortBy = $request->input('sort_by', 'created_at');
-        $sortDir = $request->input('sort_dir', 'desc');
+        return response()->json(new ProductCollection($products));
+    }
+    
+    /**
+     * Get all active products.
+     * 
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function getActiveProducts(): JsonResponse
+    {
+        $products = $this->productRepository->getActiveProducts();
         
-        // Cache key based on query parameters
-        $cacheKey = 'products_' . $page . '_' . $perPage . '_sort_' . $sortBy . '_' . $sortDir;
-        
-        // Add filters to cache key if present
-        if ($request->has('search')) {
-            $cacheKey .= '_search_' . $request->input('search');
-        }
-        if ($request->has('name')) {
-            $cacheKey .= '_name_' . $request->input('name');
-        }
-        if ($request->has('min_price')) {
-            $cacheKey .= '_min_price_' . $request->input('min_price');
-        }
-        if ($request->has('max_price')) {
-            $cacheKey .= '_max_price_' . $request->input('max_price');
-        }
-        if ($request->has('category')) {
-            $cacheKey .= '_category_' . $request->input('category');
-        }
-        
-        // Return from cache if exists
-        if (Cache::has($cacheKey)) {
-            return response()->json(Cache::get($cacheKey));
-        }
-        
-        // Build query
-        $query = Product::query();
-        
-        // Global search (searches across multiple columns)
-        if ($request->has('search')) {
-            $searchTerm = $request->input('search');
-            $query->where(function($q) use ($searchTerm) {
-                $q->where('name', 'like', '%' . $searchTerm . '%')
-                  ->orWhere('description', 'like', '%' . $searchTerm . '%')
-                  ->orWhere('category', 'like', '%' . $searchTerm . '%');
-            });
-        }
-        
-        // Apply specific filters if they exist
-        if ($request->has('name')) {
-            $query->where('name', 'like', '%' . $request->input('name') . '%');
-        }
-        
-        if ($request->has('min_price')) {
-            $query->where('price', '>=', $request->input('min_price'));
-        }
-        
-        if ($request->has('max_price')) {
-            $query->where('price', '<=', $request->input('max_price'));
-        }
-        
-        if ($request->has('category')) {
-            $query->where('category', $request->input('category'));
-        }
-        
-        // Apply sorting (with validation to prevent SQL injection)
-        $allowedSortFields = ['name', 'price', 'category', 'quantity_in_stock', 'created_at'];
-        $sortField = in_array($sortBy, $allowedSortFields) ? $sortBy : 'created_at';
-        $sortDirection = in_array($sortDir, ['asc', 'desc']) ? $sortDir : 'desc';
-        $query->orderBy($sortField, $sortDirection);
-        
-        // Get the paginated results
-        $products = $query->paginate($perPage);
-        
-        // Store in cache for 15 minutes
-        Cache::put($cacheKey, $products, now()->addMinutes(15));
-        
-        return response()->json($products);
+        return response()->json(new ProductCollection($products));
     }
 
     /**
@@ -105,8 +63,13 @@ class ProductController extends Controller
      */
     public function show($id): JsonResponse
     {
-        $product = Product::findOrFail($id);
-        return response()->json($product);
+        $product = $this->productRepository->find($id);
+        
+        if (!$product) {
+            return response()->json(['message' => 'Product not found'], 404);
+        }
+        
+        return response()->json(new ProductResource($product));
     }
 
     /**
@@ -122,8 +85,7 @@ class ProductController extends Controller
             'description' => 'nullable|string',
             'price' => 'required|numeric|min:0',
             'quantity_in_stock' => 'required|integer|min:0',
-            'category' => 'nullable|string|max:100',
-            'image_url' => 'nullable|string|max:255',
+            'active' => 'boolean',
         ]);
 
         if ($validator->fails()) {
@@ -133,8 +95,12 @@ class ProductController extends Controller
             ], 422);
         }
 
-        $product = Product::create($request->all());
-        return response()->json($product, 201);
+        $product = $this->productRepository->create($request->all());
+        
+        return response()->json([
+            'message' => 'Product created successfully',
+            'product' => new ProductResource($product)
+        ], 201);
     }
 
     /**
@@ -146,13 +112,18 @@ class ProductController extends Controller
      */
     public function update(Request $request, $id): JsonResponse
     {
+        $product = $this->productRepository->find($id);
+        
+        if (!$product) {
+            return response()->json(['message' => 'Product not found'], 404);
+        }
+        
         $validator = Validator::make($request->all(), [
             'name' => 'sometimes|required|string|max:255',
             'description' => 'nullable|string',
             'price' => 'sometimes|required|numeric|min:0',
             'quantity_in_stock' => 'sometimes|required|integer|min:0',
-            'category' => 'nullable|string|max:100',
-            'image_url' => 'nullable|string|max:255',
+            'active' => 'boolean',
         ]);
 
         if ($validator->fails()) {
@@ -162,13 +133,13 @@ class ProductController extends Controller
             ], 422);
         }
 
-        $product = Product::findOrFail($id);
-        $product->update($request->all());
+        $this->productRepository->update($request->all(), $id);
+        $updatedProduct = $this->productRepository->find($id);
         
-        // Clear cache when a product is updated
-        Cache::flush();
-        
-        return response()->json($product);
+        return response()->json([
+            'message' => 'Product updated successfully',
+            'product' => new ProductResource($updatedProduct)
+        ]);
     }
 
     /**
@@ -179,12 +150,17 @@ class ProductController extends Controller
      */
     public function destroy($id): JsonResponse
     {
-        $product = Product::findOrFail($id);
-        $product->delete();
+        $product = $this->productRepository->find($id);
         
-        // Clear cache when a product is removed
-        Cache::flush();
+        if (!$product) {
+            return response()->json(['message' => 'Product not found'], 404);
+        }
         
-        return response()->json(null, 204);
+        $this->productRepository->delete($id);
+        
+        return response()->json([
+            'message' => 'Product deleted successfully'
+        ]);
     }
+}
 }

@@ -10,12 +10,38 @@ use App\Http\Resources\OrderCollection;
 use App\Http\Resources\OrderResource;
 use App\Models\Order;
 use App\Models\Product;
+use App\Repositories\Interfaces\OrderRepositoryInterface;
+use App\Repositories\Interfaces\ProductRepositoryInterface;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 
 class OrderController extends Controller
 {
+    /**
+     * @var OrderRepositoryInterface
+     */
+    private $orderRepository;
+    
+    /**
+     * @var ProductRepositoryInterface
+     */
+    private $productRepository;
+    
+    /**
+     * OrderController constructor.
+     * 
+     * @param OrderRepositoryInterface $orderRepository
+     * @param ProductRepositoryInterface $productRepository
+     */
+    public function __construct(
+        OrderRepositoryInterface $orderRepository,
+        ProductRepositoryInterface $productRepository
+    ) {
+        $this->orderRepository = $orderRepository;
+        $this->productRepository = $productRepository;
+    }
+
     /**
      * Display a listing of the orders.
      * 
@@ -25,24 +51,9 @@ class OrderController extends Controller
     public function index(Request $request): JsonResponse
     {
         $userId = $request->user()->id ?? 1; // Fallback to user ID 1 if auth not working
-        $perPage = $request->input('per_page', 10);
         
-        // Build query
-        $query = Order::with('products')
-            ->where('user_id', $userId);
-            
-        // Allow sorting by date or status
-        $sortBy = $request->input('sort_by', 'created_at');
-        $sortDir = $request->input('sort_dir', 'desc');
-        
-        $allowedSortFields = ['created_at', 'status', 'total_amount'];
-        $sortField = in_array($sortBy, $allowedSortFields) ? $sortBy : 'created_at';
-        $sortDirection = in_array($sortDir, ['asc', 'desc']) ? $sortDir : 'desc';
-        
-        $query->orderBy($sortField, $sortDirection);
-        
-        // Get paginated results
-        $orders = $query->paginate($perPage);
+        // Get orders for the user
+        $orders = $this->orderRepository->getOrdersByUser($userId);
         
         return response()->json(new OrderCollection($orders));
     }
@@ -56,9 +67,14 @@ class OrderController extends Controller
     public function show($id): JsonResponse
     {
         $userId = request()->user()->id ?? 1; // Fallback to user ID 1 if auth not working
-        $order = Order::with('products')->where('id', $id)->where('user_id', $userId)->firstOrFail();
+        $order = $this->orderRepository->getOrderWithProducts($id);
         
-        return response()->json(new OrderResource($order));
+        // Check if order belongs to user
+        if ($order && $order->user_id == $userId) {
+            return response()->json(new OrderResource($order));
+        }
+        
+        return response()->json(['message' => 'Order not found'], 404);
     }
 
     /**
@@ -78,7 +94,14 @@ class OrderController extends Controller
             
             // Check product availability and calculate total
             foreach ($request->products as $item) {
-                $product = Product::findOrFail($item['id']);
+                $product = $this->productRepository->find($item['id']);
+                
+                if (!$product) {
+                    DB::rollBack();
+                    return response()->json([
+                        'message' => 'Product not found: ID ' . $item['id'],
+                    ], 404);
+                }
                 
                 // Check if requested quantity is available
                 if ($product->quantity_in_stock < $item['quantity']) {
@@ -107,13 +130,15 @@ class OrderController extends Controller
             
             // Create the order
             $userId = $request->user()->id ?? 1; // Fallback to user ID 1 if auth not working
-            $order = Order::create([
+            $orderData = [
                 'user_id' => $userId,
                 'total_amount' => $totalAmount,
                 'status' => 'pending',
                 'shipping_address' => $request->shipping_address,
                 'billing_address' => $request->billing_address,
-            ]);
+            ];
+            
+            $order = $this->orderRepository->create($orderData);
             
             // Attach products to the order
             $order->products()->attach($productItems);
@@ -122,7 +147,7 @@ class OrderController extends Controller
             DB::commit();
             
             // Ensure order has products loaded
-            $order->load('products');
+            $order = $this->orderRepository->getOrderWithProducts($order->id);
             
             // Dispatch OrderPlaced event to trigger email notification
             event(new OrderPlaced($order));
@@ -153,15 +178,22 @@ class OrderController extends Controller
     public function update(UpdateOrderRequest $request, string $id): JsonResponse
     {
         $userId = $request->user()->id ?? 1; // Fallback to user ID 1 if auth not working
-        $order = Order::where('id', $id)->where('user_id', $userId)->firstOrFail();
+        $order = $this->orderRepository->find($id);
+        
+        if (!$order || $order->user_id != $userId) {
+            return response()->json(['message' => 'Order not found'], 404);
+        }
         
         // Update only allowed fields
-        $order->fill($request->only(['status', 'shipping_address', 'billing_address']));
-        $order->save();
+        $updateData = $request->only(['status', 'shipping_address', 'billing_address']);
+        $this->orderRepository->update($updateData, $id);
+        
+        // Get updated order
+        $updatedOrder = $this->orderRepository->find($id);
         
         return response()->json([
             'message' => 'Order updated successfully',
-            'order' => new OrderResource($order),
+            'order' => new OrderResource($updatedOrder),
         ]);
     }
 
@@ -174,10 +206,14 @@ class OrderController extends Controller
     public function destroy(string $id): JsonResponse
     {
         $userId = request()->user()->id ?? 1; // Fallback to user ID 1 if auth not working
-        $order = Order::where('id', $id)->where('user_id', $userId)->firstOrFail();
+        $order = $this->orderRepository->find($id);
+        
+        if (!$order || $order->user_id != $userId) {
+            return response()->json(['message' => 'Order not found'], 404);
+        }
         
         // Delete the order
-        $order->delete();
+        $this->orderRepository->delete($id);
         
         return response()->json([
             'message' => 'Order deleted successfully'
