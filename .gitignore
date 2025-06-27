@@ -1,0 +1,65 @@
+*.log
+.DS_Store
+.env
+.env.backup
+.env.docker
+.env.production
+.env.local
+.env.development.local
+.env.test.local
+.phpactor.json
+.phpunit.result.cache
+/.fleet
+/.idea
+/.nova
+/.phpunit.cache
+/.vscode
+/.zed
+/auth.json
+/node_modules
+/public/build
+/public/hot
+/public/storage
+/storage/*.key
+/storage/pail
+/vendor
+Homestead.json
+Homestead.yaml
+Thumbs.db
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Testing
+/coverage
+
+# Production build files
+/dist
+/build
+
+# Mac and Windows specific files
+.DS_Store
+Thumbs.db
+
+# IDE directories
+.idea
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# Local History for Visual Studio Code
+.history/
+
+# Docker related files
+docker-compose.override.yml
+
+# Vim
+*.swp
+*.swo
+
+# Misc
+/.sass-cache
+/connect.lock
+/libpeerconnection.log
+testem.log
